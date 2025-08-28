@@ -771,3 +771,52 @@ def test_segfault_quadmesh(bounds):
     cvs.quadmesh(da, x="x", y="y")"""
 
     subprocess.run([sys.executable, "-c", textwrap.dedent(code)], check=True)
+
+
+def test_rectilinear_quadmesh_coordinate_broadcast():
+    """Test for quadmesh with non-broadcast coordinates.
+
+    This test addresses a bug where quadmesh returns all NaN values
+    when coordinates are not properly broadcast for rectilinear grids.
+    See: https://github.com/holoviz/datashader/issues/1438
+    """
+    array_module = np
+
+    # Simple coordinate bounds for easier testing
+    west, east = 1.0, 3.0
+    south, north = 10.0, 30.0
+
+    da = xr.DataArray(
+        array_module.array(
+            [
+                [1.0, 2.0, 3.0],
+                [4.0, 5.0, 6.0],
+                [7.0, 8.0, 9.0],
+            ],
+            dtype=array_module.float32,
+        ),
+        dims=("latitude", "longitude"),
+        coords={
+            "latitude": array_module.array([5.0, 20.0, 35.0]),    # overlaps south-north range 
+            "longitude": array_module.array([0.5, 2.0, 3.5]),    # overlaps west-east range
+        },
+        name="foo",
+    )
+    cvs = ds.Canvas(4, 4, x_range=(west, east), y_range=(south, north))
+    
+    # Test normal order
+    result = cvs.quadmesh(da, x="longitude", y="latitude")
+
+    # Create expected result based on the actual pattern produced
+    expected = array_module.array([
+        [5.0, 5.0, 5.0, 6.0],
+        [5.0, 5.0, 5.0, 6.0], 
+        [5.0, 5.0, 5.0, 6.0],
+        [8.0, 8.0, 8.0, 9.0]
+    ], dtype=array_module.float64)
+    
+    assert_eq_ndarray(result.values, expected, close=True)
+    
+    # Test reversed dimension order gives same result
+    result_rev = cvs.quadmesh(da.transpose("longitude", "latitude"), x="longitude", y="latitude")
+    assert_eq_ndarray(result_rev.values, expected, close=True)
