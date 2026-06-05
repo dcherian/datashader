@@ -609,6 +609,51 @@ def test_curve_quadmesh_autorange(array_module):
     assert_eq_ndarray(res.x_range, (0.5, 2.5), close=True)
     assert_eq_ndarray(res.y_range, (-1, 7), close=True)
 
+
+@pytest.mark.parametrize('array_module', array_modules)
+def test_curve_quadmesh_skips_nonfinite_vertices(array_module):
+    # A non-finite coordinate centre (e.g. a point undefined under the source
+    # projection) makes the inferred quad vertices non-finite. Such quads are
+    # skipped rather than rasterised at garbage integer positions, so finite
+    # cells still render at their true location instead of smearing across the
+    # canvas.
+    coord_array = dask.array if array_module is dask.array else np
+
+    n = 4
+    centers = np.arange(n, dtype='f8')
+    Qx = np.broadcast_to(centers, (n, n)).copy()
+    Qy = np.broadcast_to(centers[:, None], (n, n)).copy()
+    # Knock out the top-right centre; its quad shares vertices with the three
+    # neighbouring cells, so all four are dropped.
+    Qx[n - 1, n - 1] = np.nan
+    Qy[n - 1, n - 1] = np.nan
+    Z = np.arange(n * n, dtype='f8').reshape(n, n)
+    da = xr.DataArray(
+        array_module.array(Z),
+        coords={'Qx': (['Y', 'X'], coord_array.array(Qx)),
+                'Qy': (['Y', 'X'], coord_array.array(Qy))},
+        dims=['Y', 'X'],
+        name='Z',
+    )
+
+    c = ds.Canvas(plot_width=n, plot_height=n,
+                  x_range=(-0.5, n - 0.5), y_range=(-0.5, n - 0.5))
+
+    coords = np.arange(n, dtype='f8')
+    out = xr.DataArray(
+        np.array(
+            [[0.,  1.,  2.,  3.],
+             [4.,  5.,  6.,  7.],
+             [8.,  9.,  nan, nan],
+             [12., 13., nan, nan]]
+        ),
+        coords=[('Qy', coords), ('Qx', coords)],
+    )
+
+    res = c.quadmesh(da, x='Qx', y='Qy', agg=ds.sum('Z'))
+    assert_eq_xr(res, out)
+
+
 @dask_skip
 def test_curve_quadmesh_autorange_chunked():
     c = ds.Canvas(plot_width=4, plot_height=8)
