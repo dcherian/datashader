@@ -22,6 +22,14 @@ except Exception:
     cuda_args = None
 
 
+# Sentinel marking a quad vertex whose source coordinate was non-finite (NaN or
+# inf). Curvilinear coordinate arrays can carry non-finite centres (e.g. points
+# undefined under the source projection, such as off the geostationary disk).
+# Their integer canvas positions are meaningless, so any quad touching one is
+# skipped. INT32_MIN cannot collide with a real on-canvas pixel coordinate.
+_INVALID_VERTEX = np.iinfo(np.int32).min
+
+
 def _inner_make_3d_func_from_2d(*, n_arrays, func, prefix_idx):
     # Generate the 3D function source
     prefix_str = ', '.join([f"pre{i}" for i in range(prefix_idx)])
@@ -735,6 +743,13 @@ class QuadMeshCurvilinear(_QuadMeshLike):
             yverts[3] = ys[j + 1, i]
             yverts[4] = yverts[0]
 
+            # Skip quads touching a non-finite source coordinate. A single
+            # invalid vertex (e.g. a cell on the boundary of the geostationary
+            # disk) would otherwise stretch the quad across the canvas.
+            if (xverts[0] == _INVALID_VERTEX or xverts[1] == _INVALID_VERTEX or
+                    xverts[2] == _INVALID_VERTEX or xverts[3] == _INVALID_VERTEX):
+                return
+
             # Compute the rectilinear bounding box around the quad and
             # skip quad if there is no chance for it to intersect
             # viewport
@@ -946,8 +961,14 @@ class QuadMeshCurvilinear(_QuadMeshLike):
             xp = cupy if use_cuda else np
             xs = xp.empty(xscaled.shape, dtype=xp.int32)
             ys = xp.empty(yscaled.shape, dtype=xp.int32)
-            xp.multiply(xscaled, plot_width/xspan, casting="unsafe", out=xs)
-            xp.multiply(yscaled, plot_height/yspan, casting="unsafe", out=ys)
+            # Non-finite vertices cast to platform-dependent garbage ints; flag
+            # them with a sentinel so perform_extend can skip their quads.
+            invalid = ~(xp.isfinite(xscaled) & xp.isfinite(yscaled))
+            with np.errstate(invalid="ignore"):
+                xp.multiply(xscaled, plot_width/xspan, casting="unsafe", out=xs)
+                xp.multiply(yscaled, plot_height/yspan, casting="unsafe", out=ys)
+            xs[invalid] = _INVALID_VERTEX
+            ys[invalid] = _INVALID_VERTEX
 
             coord_dims = xr_ds.coords[x_name].dims
 
